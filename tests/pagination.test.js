@@ -35,7 +35,8 @@ test('catalog, reports, account and every admin page issue TiDB-safe pagination 
     }
     const search="' OR 1=1 --";await fetch(base+'/api/entries?kind=game&q='+encodeURIComponent(search)+'&page=2',{headers});
     const catalog=seen.at(-1);assert.ok(!catalog.sql.includes(search));assert.deepEqual(catalog.args,['game',`%${search}%`]);assert.match(catalog.sql,/LIMIT 25 OFFSET 24$/);
-    await fetch(base+'/api/reports?game_id=7&sort=constructor&page=2',{headers});const report=seen.at(-1);assert.match(report.sql,/ORDER BY r\.tested_at DESC/);assert.deepEqual(report.args,['7']);
+    await fetch(base+'/api/reports?game_id=7&sort=constructor&page=2',{headers});const report=seen.at(-1);assert.match(report.sql,/ORDER BY r\.created_at DESC/);assert.deepEqual(report.args,['7']);
+    for(const field of ['game_id','emulator_id']){await fetch(base+'/api/reports?'+field+'=7&page=1',{headers});assert.match(seen.at(-1).sql,/ORDER BY r\.created_at DESC,r\.id DESC/);await fetch(base+'/api/reports?'+field+'=7&sort=gpu&dir=asc',{headers});assert.match(seen.at(-1).sql,/ORDER BY r\.gpu ASC,r\.id DESC/);}
     assert.equal((await fetch(base+'/api/admin/unknown?page=1',{headers})).status,404);
   }finally{await new Promise(resolve=>server.close(resolve));delete app.locals.testQuery;}
 });

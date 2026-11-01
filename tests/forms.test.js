@@ -6,7 +6,7 @@ import {JSDOM} from 'jsdom';
 const bundled=build({entryPoints:['src/main.jsx'],bundle:true,write:false,platform:'browser',format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://api.example.test"','process.env.NODE_ENV':'"production"'}}).then(result=>result.outputFiles[0].text);
 const wait=async(predicate)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('Timed out waiting for the interface');};
 
-async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnavailable=false,duplicateCheckFailure=false,fixtureGithub='',gameFixtures=false,failReportOnce=false,existingRepo=null,duplicateOnSave=false}={}){
+async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnavailable=false,duplicateCheckFailure=false,fixtureGithub='',gameFixtures=false,failReportOnce=false,existingRepo=null,duplicateOnSave=false,currentUserId=1,isAdmin=true,reportOwnerId=12}={}){
   const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://example.test/#'+route,runScripts:'outside-only'});const {window}=dom;const calls=[];
   window.localStorage.setItem('s2cl_session','test-session');
   window.fetch=async(url,options={})=>{
@@ -14,7 +14,7 @@ async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnava
     let data={};let ok=true;
     if(parsed.hostname==='api.github.com'){if(githubUnavailable||githubApiUnavailable){ok=false;data={}}else if(path.endsWith('/readme'))data='# ExampleEmu\n\nExampleEmu is an emulator for compatible systems.';else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
     else if(parsed.hostname==='raw.githubusercontent.com'){if(githubUnavailable){ok=false;data={}}else data='# README Emulator\n\nREADME Emulator runs games on compatible computers.';}
-    else if(path==='/api/me')data={user:{id:1,display_name:'Tester',is_admin:true}};
+    else if(path==='/api/me')data={user:{id:currentUserId,display_name:'Tester',is_admin:isAdmin}};
     else if(method==='POST'||method==='PUT'){if(duplicateOnSave&&path==='/api/entries'){data={error:'This repository is already listed.',existing:duplicateOnSave};ok=false}else if(fail||(path==='/api/reports'&&failReportOnce)){data={error:'Submission rejected by server'};ok=false;failReportOnce=false}else data={id:55};}
     else if(path==='/api/entries/5')data={id:5,kind:route.includes('emulator')?'emulator':'game',name:'Existing entry',owner_id:1,wikipedia_url:'https://en.wikipedia.org/wiki/Existing',...(fixtureGithub?{github_url:fixtureGithub}:{}),...(gameFixtures?{recommended_games:[{id:2,name:'Game Two'}]}:{})};
     else if(path==='/api/entries')data={items:parsed.searchParams.get('kind')==='emulator'?[{id:3,name:'Known Emulator'}]:gameFixtures?[{id:2,name:'Game Two'}]:[],hasMore:false};
@@ -24,7 +24,7 @@ async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnava
     else if(path==='/api/account')data={reports:[],entries:[],hasMore:false};
     else if(path==='/api/admin/reports')data={items:[{id:9,game_name:'Game',emulator_name:'Emulator',status:'pending',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     else if(path==='/api/emulators/repository'){if(duplicateCheckFailure){ok=false;data=duplicateCheckFailure==='migration'?{error:'Database setup is incomplete. Run migrations 002 and 003 on TiDB before saving emulator entries.',code:'MIGRATION_REQUIRED'}:{error:'Duplicate check unavailable'}}else data={existing:existingRepo};}
-    else if(path==='/api/reports')data={items:[{id:9,user_id:12,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
+    else if(path==='/api/reports')data={items:[{id:9,user_id:reportOwnerId,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     else if(path==='/api/users/12')data={user:{id:12,display_name:'Tester'},items:[{id:9,game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     return {ok,status:ok?200:403,json:async()=>data,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
   };
@@ -110,6 +110,10 @@ test('emulator recommendations can be selected and submitted as catalog game IDs
 
 test('emulator report links lead to public tester profiles and normal game pages',async()=>{
   const ui=await openForm('/submit/emulator',{gameFixtures:true});try{ui.window.location.hash='#/emulators/5';await wait(()=>[...ui.window.document.querySelectorAll('a')].some(a=>a.hash==='#/users/12'));const tester=[...ui.window.document.querySelectorAll('a')].find(a=>a.hash==='#/users/12');assert.equal(tester.hash,'#/users/12');assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent.includes('Game Two')&&a.hash==='#/games/2'));tester.click();await wait(()=>ui.window.document.body.textContent.includes('Approved compatibility reports from this community member.'));assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent==='Emulator'&&a.hash==='#/emulators/5'));assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent==='Game Two'&&a.hash==='#/games/2'));}finally{ui.close();}
+});
+
+test('expanded report actions are spaced together and only shown to the report owner',async()=>{
+  for(const [ownerId,isAdmin,shouldEdit] of [[1,false,true],[12,true,false]]){const ui=await openForm('/submit/emulator',{reportOwnerId:ownerId,isAdmin});try{ui.window.location.hash='#/emulators/5';await wait(()=>[...ui.window.document.querySelectorAll('button')].some(b=>b.textContent==='View'));[...ui.window.document.querySelectorAll('button')].find(b=>b.textContent==='View').click();await wait(()=>ui.window.document.querySelector('.report-actions'));const actions=ui.window.document.querySelector('.report-actions');assert.ok(actions.textContent.includes('Flag for review'));assert.equal(actions.textContent.includes('Edit report'),shouldEdit);assert.equal(actions.textContent.includes('Delete report'),shouldEdit);assert.equal([...ui.window.document.querySelectorAll('button')].some(b=>b.textContent==='Delete entry'),isAdmin);}finally{ui.close();}}
 });
 
 test('moderation and logout actions use the authenticated request helper',async()=>{

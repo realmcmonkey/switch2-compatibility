@@ -17,7 +17,7 @@ test('public profiles return only approved reports; recommendations validate cat
     calls.push({sql,args});
     if(sql.startsWith('SELECT id,display_name FROM users'))return args[0]==='1'?[{id:1,display_name:'Tester'}]:[];
     if(sql.includes("r.status='approved'"))return [{id:4,game_id:2,emulator_id:3,game_name:'Game',emulator_name:'Emulator',result:'Playable'}];
-    if(sql.startsWith('SELECT * FROM entries'))return [{id:3,owner_id:1,kind:'emulator'}];
+    if(sql.startsWith('SELECT * FROM entries'))return [{id:3,owner_id:1,kind:'emulator',recommended_game_ids:null}];
     if(sql.startsWith("SELECT id FROM entries WHERE kind='game'"))return args.filter(x=>x===2).map(id=>({id}));
     if(sql.startsWith('SELECT e.*'))return [{id:3,kind:'emulator',recommended_game_ids:'[2]'}];
     if(sql.startsWith("SELECT id,name,image_url FROM entries WHERE kind='game'"))return [{id:2,name:'Game'}];

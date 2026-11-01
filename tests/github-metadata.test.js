@@ -32,7 +32,7 @@ test('README fallback extracts source-backed information when the GitHub API is 
 test('entry API stores and updates repository URLs without discarding legacy emulator information',async()=>{
   process.env.NODE_ENV='test';process.env.FRONTEND_URL='https://realmcmonkey.github.io/switch2-compatibility/';process.env.ADMIN_DISCORD_ID='123';
   const {default:app}=await import('../api/index.js');const calls=[];
-  app.locals.testQuery=async(sql,args)=>{if(sql.startsWith('SELECT u.id'))return [{id:1,discord_id:'123',display_name:'Admin',role_status:'active'}];if(sql.startsWith('SELECT * FROM entries'))return [{id:5,owner_id:1,kind:'emulator',wikipedia_url:'https://en.wikipedia.org/wiki/Old'}];calls.push({sql,args});return {insertId:10,affectedRows:1}};
+  app.locals.testQuery=async(sql,args)=>{if(sql.startsWith('SELECT u.id'))return [{id:1,discord_id:'123',display_name:'Admin',role_status:'active'}];if(sql.startsWith('SELECT * FROM entries'))return [{id:5,owner_id:1,kind:'emulator',github_url:null,recommended_game_ids:null,wikipedia_url:'https://en.wikipedia.org/wiki/Old'}];calls.push({sql,args});return {insertId:10,affectedRows:1}};
   const server=app.listen(0);await new Promise(resolve=>server.once('listening',resolve));const base='http://127.0.0.1:'+server.address().port;const headers={Authorization:'Bearer '+randomToken(),Origin:'https://realmcmonkey.github.io','Content-Type':'application/json'};
   try{
     const data={kind:'emulator',name:'Old',wikipedia_url:'https://en.wikipedia.org/wiki/Old',github_url:'https://github.com/Owner/Emulator.git',official_url:'https://example.com'};
@@ -49,7 +49,7 @@ test('repository lookup and writes reject duplicates while allowing an entry to 
   app.locals.testQuery=async(sql,args)=>{
     if(sql.startsWith('SELECT u.id'))return [{id:1,discord_id:'123',display_name:'Admin',role_status:'active'}];
     if(sql.startsWith('SELECT id,name FROM entries')){lookups.push(args);return args[2]&&Number(args[2])===77?[]:[{id:77,name:'Existing Emulator'}]}
-    if(sql.startsWith('SELECT * FROM entries'))return [{id:77,owner_id:1,kind:'emulator'}];
+    if(sql.startsWith('SELECT * FROM entries'))return [{id:77,owner_id:1,kind:'emulator',github_url:null,recommended_game_ids:null}];
     if(sql.startsWith('INSERT INTO entries')||sql.startsWith('UPDATE entries'))writes++;
     return {insertId:78,affectedRows:1};
   };
@@ -67,5 +67,5 @@ test('missing emulator database columns return a clear migration error',async()=
   process.env.NODE_ENV='test';process.env.FRONTEND_URL='https://realmcmonkey.github.io/switch2-compatibility/';
   const {default:app}=await import('../api/index.js');app.locals.testQuery=async()=>{const error=new Error("Unknown column 'github_url' in 'where clause'");error.code='ER_BAD_FIELD_ERROR';throw error};
   const server=app.listen(0);await new Promise(resolve=>server.once('listening',resolve));const base='http://127.0.0.1:'+server.address().port;
-  try{const response=await fetch(base+'/api/emulators/repository?url='+encodeURIComponent('https://github.com/0x2593/Eden-NS2'));assert.equal(response.status,503);const result=await response.json();assert.equal(result.code,'MIGRATION_REQUIRED');assert.match(result.error,/migrations 002 and 003/);}finally{await new Promise(resolve=>server.close(resolve));delete app.locals.testQuery;}
+  try{const response=await fetch(base+'/api/emulators/repository?url='+encodeURIComponent('https://github.com/0x2593/Eden-NS2'));assert.equal(response.status,503);const result=await response.json();assert.equal(result.code,'MIGRATION_REQUIRED');assert.match(result.error,/migration 002/);}finally{await new Promise(resolve=>server.close(resolve));delete app.locals.testQuery;}
 });
