@@ -6,7 +6,7 @@ import {JSDOM} from 'jsdom';
 const bundled=build({entryPoints:['src/main.jsx'],bundle:true,write:false,platform:'browser',format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://api.example.test"','process.env.NODE_ENV':'"production"'}}).then(result=>result.outputFiles[0].text);
 const wait=async(predicate)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('Timed out waiting for the interface');};
 
-async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub=''}={}){
+async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub='',gameFixtures=false}={}){
   const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://example.test/#'+route,runScripts:'outside-only'});const {window}=dom;const calls=[];
   window.localStorage.setItem('s2cl_session','test-session');
   window.fetch=async(url,options={})=>{
@@ -15,11 +15,13 @@ async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub=
     if(parsed.hostname==='api.github.com'){if(githubUnavailable){ok=false;data={}}else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
     else if(path==='/api/me')data={user:{id:1,display_name:'Tester',is_admin:true}};
     else if(method==='POST'||method==='PUT'){if(fail){data={error:'Submission rejected by server'};ok=false}else data={id:55};}
-    else if(path==='/api/entries/5')data={id:5,kind:route.includes('emulator')?'emulator':'game',name:'Existing entry',owner_id:1,wikipedia_url:'https://en.wikipedia.org/wiki/Existing',...(fixtureGithub?{github_url:fixtureGithub}:{})};
-    else if(path==='/api/entries')data={items:[],hasMore:false};
+    else if(path==='/api/entries/5')data={id:5,kind:route.includes('emulator')?'emulator':'game',name:'Existing entry',owner_id:1,wikipedia_url:'https://en.wikipedia.org/wiki/Existing',...(fixtureGithub?{github_url:fixtureGithub}:{}),...(gameFixtures?{recommended_games:[{id:2,name:'Game Two'}]}:{})};
+    else if(path==='/api/entries')data={items:gameFixtures&&parsed.searchParams.get('kind')==='game'?[{id:2,name:'Game Two'}]:[],hasMore:false};
     else if(path==='/api/reports/5')data={id:5,game_id:2,emulator_id:3,revision:'v1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'};
     else if(path==='/api/account')data={reports:[],entries:[],hasMore:false};
     else if(path==='/api/admin/reports')data={items:[{id:9,game_name:'Game',emulator_name:'Emulator',status:'pending',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
+    else if(path==='/api/reports')data={items:[{id:9,user_id:12,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
+    else if(path==='/api/users/12')data={user:{id:12,display_name:'Tester'},items:[{id:9,game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     return {ok,json:async()=>data};
   };
   window.eval(await bundled);await wait(()=>window.document.querySelector('form'));if(route.startsWith('/edit/')||route.startsWith('/report/edit/'))await wait(()=>calls.some(c=>c.path.endsWith('/5')));
@@ -56,6 +58,14 @@ test('failed GitHub lookup allows manual entry and legacy emulator Wikipedia is 
 
 test('published emulator detail links to its GitHub repository',async()=>{
   const ui=await openForm('/submit/emulator',{fixtureGithub:'https://github.com/owner/repo'});try{ui.window.location.hash='#/emulators/5';await wait(()=>[...ui.window.document.querySelectorAll('a')].some(a=>a.textContent.includes('GitHub repository')));const link=[...ui.window.document.querySelectorAll('a')].find(a=>a.textContent.includes('GitHub repository'));assert.equal(link.href,'https://github.com/owner/repo');}finally{ui.close();}
+});
+
+test('emulator recommendations can be selected and submitted as catalog game IDs',async()=>{
+  const ui=await openForm('/submit/emulator',{gameFixtures:true});try{await wait(()=>[...ui.window.document.querySelectorAll('button')].some(b=>b.textContent.includes('Game Two')));[...ui.window.document.querySelectorAll('button')].find(b=>b.textContent.includes('Game Two')).click();await wait(()=>[...ui.window.document.querySelectorAll('button')].some(b=>b.textContent==='Remove'));ui.window.document.querySelector('form').dispatchEvent(new ui.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>ui.calls.some(c=>c.path==='/api/entries'&&c.method==='POST'));const body=JSON.parse(ui.calls.find(c=>c.path==='/api/entries'&&c.method==='POST').options.body);assert.deepEqual(body.recommended_game_ids,[2]);}finally{ui.close();}
+});
+
+test('emulator report links lead to public tester profiles and normal game pages',async()=>{
+  const ui=await openForm('/submit/emulator',{gameFixtures:true});try{ui.window.location.hash='#/emulators/5';await wait(()=>[...ui.window.document.querySelectorAll('a')].some(a=>a.hash==='#/users/12'));const tester=[...ui.window.document.querySelectorAll('a')].find(a=>a.hash==='#/users/12');assert.equal(tester.hash,'#/users/12');assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent.includes('Game Two')&&a.hash==='#/games/2'));tester.click();await wait(()=>ui.window.document.body.textContent.includes('Approved compatibility reports from this community member.'));assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent==='Emulator'&&a.hash==='#/emulators/5'));assert.ok([...ui.window.document.querySelectorAll('a')].some(a=>a.textContent==='Game Two'&&a.hash==='#/games/2'));}finally{ui.close();}
 });
 
 test('moderation and logout actions use the authenticated request helper',async()=>{
