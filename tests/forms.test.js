@@ -6,13 +6,14 @@ import {JSDOM} from 'jsdom';
 const bundled=build({entryPoints:['src/main.jsx'],bundle:true,write:false,platform:'browser',format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://api.example.test"','process.env.NODE_ENV':'"production"'}}).then(result=>result.outputFiles[0].text);
 const wait=async(predicate)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('Timed out waiting for the interface');};
 
-async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub='',gameFixtures=false,failReportOnce=false,existingRepo=null,duplicateOnSave=false}={}){
+async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnavailable=false,duplicateCheckFailure=false,fixtureGithub='',gameFixtures=false,failReportOnce=false,existingRepo=null,duplicateOnSave=false}={}){
   const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://example.test/#'+route,runScripts:'outside-only'});const {window}=dom;const calls=[];
   window.localStorage.setItem('s2cl_session','test-session');
   window.fetch=async(url,options={})=>{
     const parsed=new URL(url);const path=parsed.pathname;const method=options.method||'GET';calls.push({path,method,options,url:String(url)});
     let data={};let ok=true;
-    if(parsed.hostname==='api.github.com'){if(githubUnavailable){ok=false;data={}}else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
+    if(parsed.hostname==='api.github.com'){if(githubUnavailable||githubApiUnavailable){ok=false;data={}}else if(path.endsWith('/readme'))data='# ExampleEmu\n\nExampleEmu is an emulator for compatible systems.';else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
+    else if(parsed.hostname==='raw.githubusercontent.com'){if(githubUnavailable){ok=false;data={}}else data='# README Emulator\n\nREADME Emulator runs games on compatible computers.';}
     else if(path==='/api/me')data={user:{id:1,display_name:'Tester',is_admin:true}};
     else if(method==='POST'||method==='PUT'){if(duplicateOnSave&&path==='/api/entries'){data={error:'This repository is already listed.',existing:duplicateOnSave};ok=false}else if(fail||(path==='/api/reports'&&failReportOnce)){data={error:'Submission rejected by server'};ok=false;failReportOnce=false}else data={id:55};}
     else if(path==='/api/entries/5')data={id:5,kind:route.includes('emulator')?'emulator':'game',name:'Existing entry',owner_id:1,wikipedia_url:'https://en.wikipedia.org/wiki/Existing',...(fixtureGithub?{github_url:fixtureGithub}:{}),...(gameFixtures?{recommended_games:[{id:2,name:'Game Two'}]}:{})};
@@ -20,10 +21,10 @@ async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub=
     else if(path==='/api/reports/5')data={id:5,game_id:2,emulator_id:3,revision:'v1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'};
     else if(path==='/api/account')data={reports:[],entries:[],hasMore:false};
     else if(path==='/api/admin/reports')data={items:[{id:9,game_name:'Game',emulator_name:'Emulator',status:'pending',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
-    else if(path==='/api/emulators/repository')data={existing:existingRepo};
+    else if(path==='/api/emulators/repository'){if(duplicateCheckFailure){ok=false;data={error:'Duplicate check unavailable'}}else data={existing:existingRepo};}
     else if(path==='/api/reports')data={items:[{id:9,user_id:12,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     else if(path==='/api/users/12')data={user:{id:12,display_name:'Tester'},items:[{id:9,game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
-    return {ok,json:async()=>data};
+    return {ok,status:ok?200:403,json:async()=>data,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
   };
   window.eval(await bundled);await wait(()=>window.document.querySelector('form'));if(route.startsWith('/edit/')||route.startsWith('/report/edit/'))await wait(()=>calls.some(c=>c.path.endsWith('/5')));
   return {window,calls,close:()=>window.close()};
@@ -82,7 +83,15 @@ test('emulator GitHub lookup fills editable fields; game form retains Wikipedia'
 });
 
 test('failed GitHub lookup allows manual entry and legacy emulator Wikipedia is preserved',async()=>{
-  const ui=await openForm('/edit/emulator/5',{githubUnavailable:true});try{const {window}=ui;await wait(()=>window.document.querySelector('[name="name"]').value==='Existing entry');const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.body.textContent.includes('GitHub metadata is unavailable'));window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>ui.calls.some(c=>c.path==='/api/entries/5'&&c.method==='PUT'));const body=JSON.parse(ui.calls.find(c=>c.method==='PUT').options.body);assert.equal(body.wikipedia_url,'https://en.wikipedia.org/wiki/Existing');assert.equal(body.name,'Existing entry');}finally{ui.close();}
+  const ui=await openForm('/edit/emulator/5',{githubUnavailable:true});try{const {window}=ui;await wait(()=>window.document.querySelector('[name="name"]').value==='Existing entry');const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.body.textContent.includes('metadata and README are unavailable'));window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>ui.calls.some(c=>c.path==='/api/entries/5'&&c.method==='PUT'));const body=JSON.parse(ui.calls.find(c=>c.method==='PUT').options.body);assert.equal(body.wikipedia_url,'https://en.wikipedia.org/wiki/Existing');assert.equal(body.name,'Existing entry');}finally{ui.close();}
+});
+
+test('emulator form suggests README details when the GitHub API is unavailable',async()=>{
+  const ui=await openForm('/submit/emulator',{githubApiUnavailable:true});try{const {window}=ui;const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.querySelector('[name="name"]').value==='README Emulator');assert.equal(window.document.querySelector('[name="description"]').value,'README Emulator runs games on compatible computers.');assert.match(window.document.body.textContent,/suggestions were read from the repository README/);}finally{ui.close();}
+});
+
+test('a duplicate-check outage does not stop GitHub metadata lookup',async()=>{
+  const ui=await openForm('/submit/emulator',{duplicateCheckFailure:true});try{const {window}=ui;const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.querySelector('[name="name"]').value==='ExampleEmu');assert.match(window.document.body.textContent,/Could not check for duplicate repositories/);}finally{ui.close();}
 });
 
 test('published emulator detail links to its GitHub repository',async()=>{

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseGitHubRepository,githubMetadata} from '../lib/github.js';
+import {parseGitHubRepository,githubMetadata,readmeMetadata} from '../lib/github.js';
 import {entrySchema} from '../lib/security.js';
 import {randomToken} from '../lib/auth.js';
 
@@ -13,11 +13,19 @@ test('repository URL validation accepts repository pages and rejects unrelated U
 
 test('metadata uses public GitHub endpoints, accepts missing release and reports lookup failure',async()=>{
   const original=globalThis.fetch,urls=[];
-  try{globalThis.fetch=async url=>{urls.push(url);return urls.length===1?new Response(JSON.stringify({name:'Emulator',description:'Description',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}})):new Response('',{status:404})};
-    const metadata=await githubMetadata('https://github.com/Owner/Emulator');assert.equal(metadata.name,'Emulator');assert.equal(metadata.description,'Description');assert.equal(metadata.image_url,'https://avatars.githubusercontent.com/u/42');assert.equal(metadata.versions,'');assert.equal(metadata.github_url,'https://github.com/Owner/Emulator');assert.deepEqual(urls,['https://api.github.com/repos/Owner/Emulator','https://api.github.com/repos/Owner/Emulator/releases/latest']);
-    globalThis.fetch=async url=>String(url).endsWith('/latest')?new Response(JSON.stringify({tag_name:'v2.0'})):new Response(JSON.stringify({name:'Emulator',owner:{avatar_url:'https://evil.test/avatar'}}));
+  try{globalThis.fetch=async url=>{urls.push(url);if(urls.length===1)return new Response(JSON.stringify({name:'Emulator',description:'Description',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}}));return new Response('',{status:404})};
+    const metadata=await githubMetadata('https://github.com/Owner/Emulator');assert.equal(metadata.name,'Emulator');assert.equal(metadata.description,'Description');assert.equal(metadata.image_url,'https://avatars.githubusercontent.com/u/42');assert.equal(metadata.versions,'');assert.equal(metadata.github_url,'https://github.com/Owner/Emulator');assert.ok(urls.includes('https://api.github.com/repos/Owner/Emulator/releases/latest'));
+    globalThis.fetch=async url=>String(url).endsWith('/latest')?new Response(JSON.stringify({tag_name:'v2.0'})):String(url).endsWith('/Emulator')?new Response(JSON.stringify({name:'Emulator',owner:{avatar_url:'https://evil.test/avatar'}})):new Response('',{status:404});
     const latest=await githubMetadata('https://github.com/Owner/Emulator');assert.equal(latest.versions,'v2.0');assert.equal(latest.image_url,'');
     globalThis.fetch=async()=>new Response('',{status:403});await assert.rejects(githubMetadata('https://github.com/Owner/Emulator'),/manually/);
+  }finally{globalThis.fetch=original;}
+});
+
+test('README fallback extracts source-backed information when the GitHub API is unavailable',async()=>{
+  const original=globalThis.fetch;const urls=[];
+  try{globalThis.fetch=async url=>{urls.push(String(url));return String(url).endsWith('/HEAD/README.md')?new Response('# Example Emulator\n\nExample Emulator runs games on compatible computers.\n\n![Example logo](assets/logo.png)\n\nLatest release: v1.2.3'):new Response('',{status:403})};
+    const result=await githubMetadata('https://github.com/Owner/Emulator');assert.equal(result.name,'Example Emulator');assert.equal(result.description,'Example Emulator runs games on compatible computers.');assert.equal(result.versions,'v1.2.3');assert.equal(result.image_url,'https://raw.githubusercontent.com/Owner/Emulator/HEAD/assets/logo.png');assert.equal(result.metadataUnavailable,true);assert.equal(result.readmeUsed,true);assert.ok(urls.some(url=>url.endsWith('/HEAD/README.md')));
+    const unsafe=readmeMetadata('# Emulator\n\nA longer description of this emulator for users.\n\n![logo](https://evil.test/logo.png)',{owner:'Owner',repo:'Emulator'});assert.equal(unsafe.image_url,'');
   }finally{globalThis.fetch=original;}
 });
 
