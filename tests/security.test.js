@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {isAdmin,canEdit,nameKey,entrySchema,reportSchema} from '../api/security.js';
+import {isAdmin,canEdit,nameKey,entrySchema,reportSchema} from '../lib/security.js';
 const adminId='123456789012345678';
 test('administrator is identified by active Discord ID, not display name',()=>{assert.equal(isAdmin({discord_id:adminId,role_status:'active'},adminId),true);assert.equal(isAdmin({discord_id:'999',display_name:adminId,role_status:'active'},adminId),false);assert.equal(isAdmin({discord_id:adminId,role_status:'banned'},adminId),false);assert.equal(isAdmin({discord_id:adminId,role_status:'active'},undefined),false)});
 test('only active owner or administrator can edit',()=>{assert.equal(canEdit({id:2,discord_id:'2',role_status:'active'},2,adminId),true);assert.equal(canEdit({id:2,discord_id:'2',role_status:'suspended'},2,adminId),false);assert.equal(canEdit({id:3,discord_id:'3',role_status:'active'},2,adminId),false);assert.equal(canEdit({id:3,discord_id:adminId,role_status:'active'},2,adminId),true)});
