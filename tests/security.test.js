@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {isAdmin,canEdit,nameKey,entrySchema,reportSchema} from '../api/security.js';
+const adminId='123456789012345678';
+test('administrator is identified by active Discord ID, not display name',()=>{assert.equal(isAdmin({discord_id:adminId,role_status:'active'},adminId),true);assert.equal(isAdmin({discord_id:'999',display_name:adminId,role_status:'active'},adminId),false);assert.equal(isAdmin({discord_id:adminId,role_status:'banned'},adminId),false);assert.equal(isAdmin({discord_id:adminId,role_status:'active'},undefined),false)});
+test('only active owner or administrator can edit',()=>{assert.equal(canEdit({id:2,discord_id:'2',role_status:'active'},2,adminId),true);assert.equal(canEdit({id:2,discord_id:'2',role_status:'suspended'},2,adminId),false);assert.equal(canEdit({id:3,discord_id:'3',role_status:'active'},2,adminId),false);assert.equal(canEdit({id:3,discord_id:adminId,role_status:'active'},2,adminId),true)});
+test('duplicate normalization and entry validation',()=>{assert.equal(nameKey('  GAME   Name '),nameKey('game name'));assert.equal(entrySchema.safeParse({kind:'game',name:'Game',image_url:'javascript:alert(1)'}).success,false);assert.equal(entrySchema.safeParse({kind:'game',name:'Game'}).success,true)});
+test('reports require valid fields and allowed status',()=>{const r={game_id:1,emulator_id:2,revision:'1',os:'Linux',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'};assert.equal(reportSchema.safeParse(r).success,true);assert.equal(reportSchema.safeParse({...r,result:'Invented'}).success,false);assert.equal(reportSchema.safeParse({...r,cpu:''}).success,false)});
