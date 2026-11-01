@@ -10,7 +10,7 @@ async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub=
   const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://example.test/#'+route,runScripts:'outside-only'});const {window}=dom;const calls=[];
   window.localStorage.setItem('s2cl_session','test-session');
   window.fetch=async(url,options={})=>{
-    const parsed=new URL(url);const path=parsed.pathname;const method=options.method||'GET';calls.push({path,method,options});
+    const parsed=new URL(url);const path=parsed.pathname;const method=options.method||'GET';calls.push({path,method,options,url:String(url)});
     let data={};let ok=true;
     if(parsed.hostname==='api.github.com'){if(githubUnavailable){ok=false;data={}}else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
     else if(path==='/api/me')data={user:{id:1,display_name:'Tester',is_admin:true}};
@@ -38,7 +38,7 @@ test('entry and report submission errors are visible and keep the user on the fo
   for(const route of ['/submit/game','/submit/emulator','/edit/game/5','/report/2','/report/edit/5']){const ui=await openForm(route,{fail:true});try{ui.window.document.querySelector('form').dispatchEvent(new ui.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>ui.window.document.querySelector('[role="alert"]'));assert.match(ui.window.document.querySelector('[role="alert"]').textContent,/Submission rejected by server/);assert.equal(ui.window.location.hash,'#'+route);}finally{ui.close();}}
 });
 
-test('report pagination controls cannot submit the report form',async()=>{const ui=await openForm('/report/2');try{for(const button of ui.window.document.querySelectorAll('.pagination button'))assert.equal(button.type,'button');}finally{ui.close();}});
+test('report form has no pagination controls and emulator search remains available',async()=>{const ui=await openForm('/report/2');try{assert.equal(ui.window.document.querySelector('.pagination'),null);const input=[...ui.window.document.querySelectorAll('input')].find(x=>x.parentElement.textContent.includes('Search emulators'));Object.getOwnPropertyDescriptor(ui.window.HTMLInputElement.prototype,'value').set.call(input,'search-term');input.dispatchEvent(new ui.window.Event('input',{bubbles:true}));await wait(()=>ui.calls.some(c=>c.path==='/api/entries'&&c.options.method===undefined&&c.options&&c.url?.includes('q=search-term')));}finally{ui.close();}});
 
 test('emulator dropdown includes the not-listed option and switches the button',async()=>{
   const ui=await openForm('/report/2');try{const {window}=ui;const select=window.document.querySelector('[name="emulator_id"]');assert.ok([...select.options].some(option=>option.value==='__not_listed__'&&option.textContent==='Emulator not listed'));assert.equal(window.document.querySelector('input[type="checkbox"]'),null);select.value='__not_listed__';select.dispatchEvent(new window.Event('change',{bubbles:true}));await wait(()=>window.document.querySelector('form > button.btn.yellow').textContent==='Next');select.value='';select.dispatchEvent(new window.Event('change',{bubbles:true}));await wait(()=>window.document.querySelector('form > button.btn.yellow').textContent==='Submit for review');}finally{ui.close();}
