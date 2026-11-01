@@ -1,6 +1,6 @@
 # Switch 2 Compatibility Library
 
-A community-maintained compatibility library. The React frontend is deployed to GitHub Pages; an Express API runs on Vercel and connects to TiDB Cloud. Games and emulators publish immediately; reports require administrator approval. No games, ROMs, or video files are hosted.
+A community-maintained compatibility library. The React frontend is deployed to GitHub Pages; an Express API runs on Vercel and connects to TiDB Cloud. Games, emulators, and compatibility reports are visible immediately. Reports can also be reviewed by an administrator. No games, ROMs, or video files are hosted.
 
 ## Required setup
 
@@ -28,7 +28,7 @@ Emulator forms look up an optional public GitHub repository and its README direc
 
 Administrator approvals and other retained moderation actions are recorded in `moderation_log`. Suspended or banned accounts cannot submit or edit. Report editing and deletion are restricted to the report's author or an administrator; administrators can also approve or reject reports. Only administrators can remove games or emulators. Entry names are normalized for exact duplicate detection, but administrators should still review similar names manually. When an administrator deletes an entry, its associated reports and report flags are also deleted in the same transaction. There is no automatic merge of duplicate entries.
 
-The administrator report queue contains pending reports only. Approval publishes a report and removes it from the queue. Denial permanently deletes the report, its flags, and report-specific moderation history from the live database in a transaction. The application does not control TiDB backups, exports, database logs, or browser copies; their retention must be managed separately.
+The administrator report queue contains pending reports only. Reports are public immediately, but public report pages and APIs do not disclose whether an individual report is approved. Approval marks a report as approved and removes it from the queue. Denial permanently deletes the report, its flags, and report-specific moderation history from the live database in a transaction. The application does not control TiDB backups, exports, database logs, or browser copies; their retention must be managed separately.
 
 The History tab can search by game or emulator and sort by date or name across all pages. New report actions retain a compact snapshot of the game, emulator, tester, result, and revision so that history remains understandable if the report is later removed. Older history can show those details only while its linked report still exists; denied reports and their related history are deleted as described above.
 
