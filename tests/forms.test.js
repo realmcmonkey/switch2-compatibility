@@ -6,7 +6,7 @@ import {JSDOM} from 'jsdom';
 const bundled=build({entryPoints:['src/main.jsx'],bundle:true,write:false,platform:'browser',format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://api.example.test"','process.env.NODE_ENV':'"production"'}}).then(result=>result.outputFiles[0].text);
 const wait=async(predicate)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}throw new Error('Timed out waiting for the interface');};
 
-async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub='',gameFixtures=false,failReportOnce=false}={}){
+async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub='',gameFixtures=false,failReportOnce=false,existingRepo=null,duplicateOnSave=false}={}){
   const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://example.test/#'+route,runScripts:'outside-only'});const {window}=dom;const calls=[];
   window.localStorage.setItem('s2cl_session','test-session');
   window.fetch=async(url,options={})=>{
@@ -14,12 +14,13 @@ async function openForm(route,{fail=false,githubUnavailable=false,fixtureGithub=
     let data={};let ok=true;
     if(parsed.hostname==='api.github.com'){if(githubUnavailable){ok=false;data={}}else if(path.endsWith('/releases/latest'))data={tag_name:'v2.0'};else data={name:'ExampleEmu',description:'An emulator',owner:{avatar_url:'https://avatars.githubusercontent.com/u/42'}};}
     else if(path==='/api/me')data={user:{id:1,display_name:'Tester',is_admin:true}};
-    else if(method==='POST'||method==='PUT'){if(fail||(path==='/api/reports'&&failReportOnce)){data={error:'Submission rejected by server'};ok=false;failReportOnce=false}else data={id:55};}
+    else if(method==='POST'||method==='PUT'){if(duplicateOnSave&&path==='/api/entries'){data={error:'This repository is already listed.',existing:duplicateOnSave};ok=false}else if(fail||(path==='/api/reports'&&failReportOnce)){data={error:'Submission rejected by server'};ok=false;failReportOnce=false}else data={id:55};}
     else if(path==='/api/entries/5')data={id:5,kind:route.includes('emulator')?'emulator':'game',name:'Existing entry',owner_id:1,wikipedia_url:'https://en.wikipedia.org/wiki/Existing',...(fixtureGithub?{github_url:fixtureGithub}:{}),...(gameFixtures?{recommended_games:[{id:2,name:'Game Two'}]}:{})};
     else if(path==='/api/entries')data={items:gameFixtures&&parsed.searchParams.get('kind')==='game'?[{id:2,name:'Game Two'}]:[],hasMore:false};
     else if(path==='/api/reports/5')data={id:5,game_id:2,emulator_id:3,revision:'v1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'};
     else if(path==='/api/account')data={reports:[],entries:[],hasMore:false};
     else if(path==='/api/admin/reports')data={items:[{id:9,game_name:'Game',emulator_name:'Emulator',status:'pending',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
+    else if(path==='/api/emulators/repository')data={existing:existingRepo};
     else if(path==='/api/reports')data={items:[{id:9,user_id:12,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     else if(path==='/api/users/12')data={user:{id:12,display_name:'Tester'},items:[{id:9,game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     return {ok,json:async()=>data};
@@ -53,6 +54,18 @@ test('failed report submission retries without adding a duplicate emulator',asyn
 
 test('failed emulator creation leaves the report unsubmitted and allows going back',async()=>{
   const ui=await openForm('/report/2',{fail:true});try{const {window}=ui;window.document.querySelector('[name="emulator_id"]').value='__not_listed__';window.document.querySelector('[name="emulator_id"]').dispatchEvent(new window.Event('change',{bubbles:true}));await wait(()=>window.document.body.textContent.includes('Next'));window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>window.document.querySelector('[name="github_url"]'));const name=window.document.querySelector('[name="name"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(name,'New Emulator');name.dispatchEvent(new window.Event('input',{bubbles:true}));window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>window.document.querySelector('[role="alert"]'));assert.match(window.document.querySelector('[role="alert"]').textContent,/Submission rejected by server/);assert.equal(ui.calls.filter(c=>c.path==='/api/reports'&&c.method==='POST').length,0);[...window.document.querySelectorAll('button')].find(b=>b.textContent==='Back to report').click();await wait(()=>window.document.querySelector('[name="revision"]'));assert.equal(window.document.querySelector('[name="emulator_id"]').value,'__not_listed__');}finally{ui.close();}
+});
+
+test('duplicate repository confirmation opens the existing emulator from its add page',async()=>{
+  const ui=await openForm('/submit/emulator',{existingRepo:{id:77,name:'Existing Emulator'}});try{const {window}=ui;let prompts=0;window.confirm=message=>{prompts++;assert.match(message,/Existing Emulator/);return true};const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.location.hash==='#/emulators/77');assert.equal(prompts,1);assert.equal(ui.calls.filter(c=>c.method==='POST').length,0);}finally{ui.close();}
+});
+
+test('duplicate repository in a report returns to the completed report with that emulator selected',async()=>{
+  const ui=await openForm('/report/2',{existingRepo:{id:77,name:'Existing Emulator'}});try{const {window}=ui;window.confirm=()=>true;const revision=window.document.querySelector('[name="revision"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(revision,'saved-revision');revision.dispatchEvent(new window.Event('input',{bubbles:true}));const select=window.document.querySelector('[name="emulator_id"]');select.value='__not_listed__';select.dispatchEvent(new window.Event('change',{bubbles:true}));await wait(()=>window.document.querySelector('form > button.btn.yellow').textContent==='Next');window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>window.document.querySelector('[name="github_url"]'));const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.querySelector('[name="emulator_id"]')?.value==='77');assert.equal(window.document.querySelector('[name="revision"]').value,'saved-revision');assert.equal(window.document.querySelector('[name="emulator_id"]').selectedOptions[0].textContent,'Existing Emulator');assert.equal(window.document.querySelector('form > button.btn.yellow').textContent,'Submit for review');assert.equal(ui.calls.filter(c=>c.method==='POST').length,0);}finally{ui.close();}
+});
+
+test('duplicate save warning waits for confirmation before navigating',async()=>{
+  const existing={id:77,name:'Existing Emulator'};const ui=await openForm('/submit/emulator',{duplicateOnSave:existing});try{const {window}=ui;window.confirm=()=>false;window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>window.document.querySelector('[role="alert"]'));assert.equal(window.location.hash,'#/submit/emulator');assert.match(window.document.querySelector('[role="alert"]').textContent,/already listed/);window.confirm=()=>true;window.document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>window.location.hash==='#/emulators/77');}finally{ui.close();}
 });
 
 test('emulator GitHub lookup fills editable fields; game form retains Wikipedia',async()=>{

@@ -34,3 +34,23 @@ test('entry API stores and updates repository URLs without discarding legacy emu
     data.github_url='https://evil.test/repo';assert.equal((await fetch(base+'/api/entries',{method:'POST',headers,body:JSON.stringify(data)})).status,400);
   }finally{await new Promise(resolve=>server.close(resolve));delete app.locals.testQuery;}
 });
+
+test('repository lookup and writes reject duplicates while allowing an entry to retain its own repository',async()=>{
+  process.env.NODE_ENV='test';process.env.FRONTEND_URL='https://realmcmonkey.github.io/switch2-compatibility/';process.env.ADMIN_DISCORD_ID='123';
+  const {default:app}=await import('../api/index.js');let writes=0;const lookups=[];
+  app.locals.testQuery=async(sql,args)=>{
+    if(sql.startsWith('SELECT u.id'))return [{id:1,discord_id:'123',display_name:'Admin',role_status:'active'}];
+    if(sql.startsWith('SELECT id,name FROM entries')){lookups.push(args);return args[2]&&Number(args[2])===77?[]:[{id:77,name:'Existing Emulator'}]}
+    if(sql.startsWith('SELECT * FROM entries'))return [{id:77,owner_id:1,kind:'emulator'}];
+    if(sql.startsWith('INSERT INTO entries')||sql.startsWith('UPDATE entries'))writes++;
+    return {insertId:78,affectedRows:1};
+  };
+  const server=app.listen(0);await new Promise(resolve=>server.once('listening',resolve));const base='http://127.0.0.1:'+server.address().port;const headers={Authorization:'Bearer '+randomToken(),Origin:'https://realmcmonkey.github.io','Content-Type':'application/json'};
+  try{
+    const lookup=await fetch(base+'/api/emulators/repository?url='+encodeURIComponent('https://github.com/OWNER/Repo.git/'));assert.deepEqual((await lookup.json()).existing,{id:77,name:'Existing Emulator'});assert.deepEqual(lookups[0],['https://github.com/owner/repo','https://github.com/owner/repo.git']);
+    const entry={kind:'emulator',name:'Different Name',github_url:'https://github.com/Owner/Repo'};
+    const duplicate=await fetch(base+'/api/entries',{method:'POST',headers,body:JSON.stringify(entry)});assert.equal(duplicate.status,409);assert.equal((await duplicate.json()).existing.id,77);assert.equal(writes,0);
+    const edit=await fetch(base+'/api/entries/77',{method:'PUT',headers,body:JSON.stringify(entry)});assert.equal(edit.status,200);assert.equal(writes,1);assert.equal(lookups.at(-1)[2],77);
+    assert.equal((await fetch(base+'/api/emulators/repository?url='+encodeURIComponent('https://evil.test/x/y'))).status,400);
+  }finally{await new Promise(resolve=>server.close(resolve));delete app.locals.testQuery;}
+});
