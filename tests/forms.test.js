@@ -21,7 +21,7 @@ async function openForm(route,{fail=false,githubUnavailable=false,githubApiUnava
     else if(path==='/api/reports/5')data={id:5,game_id:2,emulator_id:3,revision:'v1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'};
     else if(path==='/api/account')data={reports:[],entries:[],hasMore:false};
     else if(path==='/api/admin/reports')data={items:[{id:9,game_name:'Game',emulator_name:'Emulator',status:'pending',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
-    else if(path==='/api/emulators/repository'){if(duplicateCheckFailure){ok=false;data={error:'Duplicate check unavailable'}}else data={existing:existingRepo};}
+    else if(path==='/api/emulators/repository'){if(duplicateCheckFailure){ok=false;data=duplicateCheckFailure==='migration'?{error:'Database setup is incomplete. Run migrations 002 and 003 on TiDB before saving emulator entries.',code:'MIGRATION_REQUIRED'}:{error:'Duplicate check unavailable'}}else data={existing:existingRepo};}
     else if(path==='/api/reports')data={items:[{id:9,user_id:12,tester:'Tester',game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     else if(path==='/api/users/12')data={user:{id:12,display_name:'Tester'},items:[{id:9,game_id:2,game_name:'Game Two',emulator_id:5,emulator_name:'Emulator',revision:'1',os:'OS',cpu:'CPU',gpu:'GPU',result:'Playable',tested_at:'2026-01-01'}],hasMore:false};
     return {ok,status:ok?200:403,json:async()=>data,text:async()=>typeof data==='string'?data:JSON.stringify(data)};
@@ -92,6 +92,10 @@ test('emulator form suggests README details when the GitHub API is unavailable',
 
 test('a duplicate-check outage does not stop GitHub metadata lookup',async()=>{
   const ui=await openForm('/submit/emulator',{duplicateCheckFailure:true});try{const {window}=ui;const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/owner/repo');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.querySelector('[name="name"]').value==='ExampleEmu');assert.match(window.document.body.textContent,/Could not check for duplicate repositories/);}finally{ui.close();}
+});
+
+test('missing database migration is explained while metadata still loads',async()=>{
+  const ui=await openForm('/submit/emulator',{duplicateCheckFailure:'migration'});try{const {window}=ui;const input=window.document.querySelector('[name="github_url"]');Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(input,'https://github.com/0x2593/Eden-NS2');input.dispatchEvent(new window.Event('input',{bubbles:true}));await wait(()=>window.document.querySelector('[name="name"]').value==='ExampleEmu');assert.match(window.document.body.textContent,/Run migrations 002 and 003 on TiDB/);}finally{ui.close();}
 });
 
 test('published emulator detail links to its GitHub repository',async()=>{
