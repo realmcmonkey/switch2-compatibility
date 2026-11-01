@@ -2,30 +2,26 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import mysql from 'mysql2/promise';
-import { SignJWT, jwtVerify } from 'jose';
-import { randomBytes } from 'node:crypto';
 import { entrySchema, reportSchema, nameKey, isAdmin, canEdit } from '../lib/security.js';
+import { randomToken, digest, validToken, fixedFrontend, bearer, consumeHandoff } from '../lib/auth.js';
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
-const frontend = process.env.FRONTEND_URL || 'http://localhost:5173/';
+const frontend = fixedFrontend(process.env.FRONTEND_URL || 'http://localhost:5173/');
 const allowedOrigin = new URL(frontend).origin;
-app.use(cors({origin:allowedOrigin,credentials:true}));
+app.use(cors({origin:allowedOrigin}));
 app.use(express.json({limit:'32kb'}));
-app.use(cookieParser());
+app.use((req,res,next)=>{if(req.get('authorization') || req.path.startsWith('/api/auth/'))res.set('Cache-Control','no-store');next();});
 app.use('/api',rateLimit({windowMs:60_000,limit:180,standardHeaders:true,legacyHeaders:false}));
 app.use('/api', (req,res,next) => { if (!['GET','HEAD','OPTIONS'].includes(req.method) && req.get('origin') !== allowedOrigin) return res.status(403).json({error:'Invalid request origin'}); next(); });
 let pool;
 function db(){ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not configured'); if (!pool) {const u=new URL(process.env.DATABASE_URL);pool=mysql.createPool({host:u.hostname,port:Number(u.port||3306),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:decodeURIComponent(u.pathname.slice(1)),ssl:process.env.DATABASE_SSL === 'false' ? undefined : {minVersion:'TLSv1.2',rejectUnauthorized:true},connectionLimit:5,waitForConnections:true,queueLimit:100,enableKeepAlive:true});} return pool; }
-const query=async(sql,args=[]) => (await db().execute(sql,args))[0];
-const secret=()=>{if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length<32) throw new Error('SESSION_SECRET must have at least 32 characters');return new TextEncoder().encode(process.env.SESSION_SECRET)};
-const cookieOpts={httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:process.env.NODE_ENV==='production'?'none':'lax',path:'/api'};
+const query=async(sql,args=[]) => process.env.NODE_ENV==='test' && app.locals.testQuery ? app.locals.testQuery(sql,args) : (await db().execute(sql,args))[0];
 const asyncRoute=fn=>(req,res,next)=>Promise.resolve(fn(req,res,next)).catch(next);
-app.use(asyncRoute(async(req,res,next)=>{req.user=null; if(req.cookies.session){try{const {payload}=await jwtVerify(req.cookies.session,secret()); const users=await query('SELECT id,discord_id,display_name,avatar,role_status FROM users WHERE id=?',[payload.sub]); req.user=users[0] || null;}catch{}} next();}));
+app.use(asyncRoute(async(req,res,next)=>{req.user=null;req.sessionToken=bearer(req.get('authorization'));if(req.sessionToken){const users=await query('SELECT u.id,u.discord_id,u.display_name,u.avatar,u.role_status FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at > UTC_TIMESTAMP()',[digest(req.sessionToken)]);req.user=users[0] || null;}next();}));
 const auth=(req,res,next)=>{if(!req.user)return res.status(401).json({error:'Please sign in with Discord'});if(req.user.role_status!=='active')return res.status(403).json({error:'Your account is suspended or banned'});next();};
 const admin=(req,res,next)=>isAdmin(req.user,process.env.ADMIN_DISCORD_ID)?next():res.status(403).json({error:'Administrator access required'});
 const limitWrites=rateLimit({windowMs:15*60_000,limit:40,standardHeaders:true,legacyHeaders:false});
@@ -33,10 +29,40 @@ const page=req=>Math.max(1,Math.min(100000,Number.parseInt(req.query.page,10)||1
 const log=async(req,action,type,id,details='')=>query('INSERT INTO moderation_log (admin_id,action,target_type,target_id,details) VALUES (?,?,?,?,?)',[req.user.id,action,type,id,details]);
 
 app.get('/api/health',(_req,res)=>res.json({ok:true}));
-app.get('/api/auth/login',asyncRoute(async(req,res)=>{if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_REDIRECT_URI)throw new Error('Discord OAuth is not configured');const state=randomBytes(24).toString('hex');res.cookie('oauth_state',state,{...cookieOpts,maxAge:600000});const u=new URL('https://discord.com/oauth2/authorize');u.search=new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,redirect_uri:process.env.DISCORD_REDIRECT_URI,response_type:'code',scope:'identify',state});res.redirect(u.toString());}));
-app.get('/api/auth/callback',asyncRoute(async(req,res)=>{if(!req.query.state||req.query.state!==req.cookies.oauth_state||!req.query.code)return res.status(400).send('Invalid or expired login request. Please try again.');res.clearCookie('oauth_state',cookieOpts);const token=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,client_secret:process.env.DISCORD_CLIENT_SECRET,grant_type:'authorization_code',code:req.query.code,redirect_uri:process.env.DISCORD_REDIRECT_URI})});if(!token.ok)throw new Error('Discord token exchange failed');const data=await token.json();const profile=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${data.access_token}`}});if(!profile.ok)throw new Error('Discord profile request failed');const u=await profile.json();await query('INSERT INTO users (discord_id,display_name,avatar) VALUES (?,?,?) ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),avatar=VALUES(avatar)',[u.id,(u.global_name||u.username).slice(0,100),u.avatar||null]);const [user]=await query('SELECT id FROM users WHERE discord_id=?',[u.id]);const jwt=await new SignJWT({}).setProtectedHeader({alg:'HS256'}).setSubject(String(user.id)).setIssuedAt().setExpirationTime('7d').sign(secret());res.cookie('session',jwt,{...cookieOpts,maxAge:7*86400000});res.redirect(frontend+'#/account');}));
-app.post('/api/auth/logout',(req,res)=>{res.clearCookie('session',cookieOpts);res.json({ok:true});});
-app.get('/api/me',(req,res)=>res.json({user:req.user?{id:req.user.id,display_name:req.user.display_name,role_status:req.user.role_status,is_admin:isAdmin(req.user,process.env.ADMIN_DISCORD_ID)}:null}));
+const loginLimit=rateLimit({windowMs:15*60_000,limit:30,standardHeaders:true,legacyHeaders:false});
+app.get('/api/auth/login',loginLimit,asyncRoute(async(req,res)=>{
+  const {challenge,state}=req.query;
+  if(!validToken(challenge)||!validToken(state))return res.status(400).send('Start sign-in from the website.');
+  if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_REDIRECT_URI)throw new Error('Discord OAuth is not configured');
+  const discordState=randomToken();
+  await query("INSERT INTO auth_handoffs (discord_state_hash,client_state_hash,client_state,verifier_challenge,expires_at) VALUES (?,?,?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))",[digest(discordState),digest(state),state,challenge]);
+  const u=new URL('https://discord.com/oauth2/authorize');u.search=new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,redirect_uri:process.env.DISCORD_REDIRECT_URI,response_type:'code',scope:'identify',state:discordState});
+  res.set('Cache-Control','no-store').redirect(u.toString());
+}));
+app.get('/api/auth/callback',loginLimit,asyncRoute(async(req,res)=>{
+  const {state,code}=req.query;
+  if(!validToken(state)||typeof code!=='string'||!code||code.length>512)return res.status(400).send('Invalid or expired login request. Please try again.');
+  const stateHash=digest(state);
+  const claim=await query("UPDATE auth_handoffs SET status='processing' WHERE discord_state_hash=? AND status='started' AND expires_at > UTC_TIMESTAMP()",[stateHash]);
+  if(claim.affectedRows!==1)return res.status(400).send('Invalid or expired login request. Please try again.');
+  const [handoff]=await query('SELECT id,client_state FROM auth_handoffs WHERE discord_state_hash=?',[stateHash]);
+  const token=await fetch('https://discord.com/api/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,client_secret:process.env.DISCORD_CLIENT_SECRET,grant_type:'authorization_code',code,redirect_uri:process.env.DISCORD_REDIRECT_URI})});
+  if(!token.ok)throw new Error('Discord token exchange failed');
+  const data=await token.json();const profile=await fetch('https://discord.com/api/users/@me',{headers:{Authorization:`Bearer ${data.access_token}`}});if(!profile.ok)throw new Error('Discord profile request failed');
+  const u=await profile.json();await query('INSERT INTO users (discord_id,display_name,avatar) VALUES (?,?,?) ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),avatar=VALUES(avatar)',[u.id,(u.global_name||u.username).slice(0,100),u.avatar||null]);
+  const [user]=await query('SELECT id FROM users WHERE discord_id=?',[u.id]);const handoffCode=randomToken();
+  await query("UPDATE auth_handoffs SET status='ready',code_hash=?,user_id=?,expires_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) WHERE id=? AND status='processing'",[digest(handoffCode),user.id,handoff.id]);
+  // Fragment is never sent in HTTP requests. The only redirect target is FRONTEND_URL.
+  res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'}).redirect(frontend+'#/auth/callback?'+new URLSearchParams({code:handoffCode,state:handoff.client_state}));
+}));
+app.post('/api/auth/exchange',loginLimit,asyncRoute(async(req,res)=>{
+  const userId=await consumeHandoff(query,req.body?.code,req.body?.verifier,req.body?.state);
+  if(!userId)return res.status(400).json({error:'Invalid, expired, or already used sign-in. Please try again.'});
+  const session=randomToken();await query('INSERT INTO auth_sessions (token_hash,user_id,expires_at) VALUES (?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 DAY))',[digest(session),userId]);
+  res.set('Cache-Control','no-store').json({session});
+}));
+app.post('/api/auth/logout',asyncRoute(async(req,res)=>{if(req.sessionToken)await query('DELETE FROM auth_sessions WHERE token_hash=?',[digest(req.sessionToken)]);res.set('Cache-Control','no-store').json({ok:true});}));
+app.get('/api/me',(req,res)=>res.set('Cache-Control','no-store').json({user:req.user?{id:req.user.id,display_name:req.user.display_name,role_status:req.user.role_status,is_admin:isAdmin(req.user,process.env.ADMIN_DISCORD_ID)}:null}));
 app.get('/api/stats',asyncRoute(async(req,res)=>{const [s]=await query("SELECT (SELECT COUNT(*) FROM entries WHERE kind='game') games,(SELECT COUNT(*) FROM entries WHERE kind='emulator') emulators,(SELECT COUNT(*) FROM reports WHERE status='approved') reports,(SELECT COUNT(*) FROM users) contributors");res.set('Cache-Control','public, max-age=60, s-maxage=300');res.json(s);}));
 app.get('/api/entries',asyncRoute(async(req,res)=>{const kind=req.query.kind;if(!['game','emulator'].includes(kind))return res.status(400).json({error:'Invalid category'});const search=String(req.query.q||'').slice(0,100);const p=page(req);const rows=await query('SELECT id,kind,name,description,image_url,image_attribution,release_info FROM entries WHERE kind=? AND name LIKE ? ORDER BY name,id LIMIT 25 OFFSET ?',[kind,`%${search}%`,(p-1)*24]);res.json({items:rows.slice(0,24),hasMore:rows.length>24,page:p});}));
 app.get('/api/entries/:id',asyncRoute(async(req,res)=>{const [row]=await query('SELECT e.*,u.display_name owner_name FROM entries e JOIN users u ON u.id=e.owner_id WHERE e.id=?',[req.params.id]);if(!row)return res.status(404).json({error:'Entry not found'});res.json(row);}));
